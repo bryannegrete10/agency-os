@@ -1,0 +1,56 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="512" y1="90" x2="512" y2="914" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1b1e29"/>
+      <stop offset="1" stop-color="#090a0f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="512" cy="502" r="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7d8cff" stop-opacity="0.50"/>
+      <stop offset="1" stop-color="#7d8cff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hub" x1="430" y1="416" x2="600" y2="592" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9aa4ff"/>
+      <stop offset="1" stop-color="#5a67e6"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="512" y1="90" x2="512" y2="914" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- squircle background -->
+  <rect x="100" y="90" width="824" height="824" rx="188" fill="url(#bg)"/>
+  <rect x="100" y="90" width="824" height="824" rx="188" fill="url(#glow)"/>
+  <rect x="101.5" y="91.5" width="821" height="821" rx="186.5" fill="none" stroke="url(#edge)" stroke-width="3"/>
+
+  <!-- connectors (hub to the 4 agent nodes) -->
+  <g stroke="#7d8cff" stroke-width="12" stroke-linecap="round" opacity="0.55">
+    <line x1="512" y1="502" x2="512" y2="316"/>
+    <line x1="512" y1="502" x2="512" y2="688"/>
+    <line x1="512" y1="502" x2="326" y2="502"/>
+    <line x1="512" y1="502" x2="698" y2="502"/>
+  </g>
+
+  <!-- 4 agent nodes -->
+  <g>
+    <g fill="none" stroke="#7d8cff" stroke-width="6" opacity="0.55">
+      <circle cx="512" cy="316" r="48"/>
+      <circle cx="512" cy="688" r="48"/>
+      <circle cx="326" cy="502" r="48"/>
+      <circle cx="698" cy="502" r="48"/>
+    </g>
+    <g fill="#c9ceff">
+      <circle cx="512" cy="316" r="34"/>
+      <circle cx="512" cy="688" r="34"/>
+      <circle cx="326" cy="502" r="34"/>
+      <circle cx="698" cy="502" r="34"/>
+    </g>
+  </g>
+
+  <!-- central control hub -->
+  <circle cx="512" cy="502" r="96" fill="url(#hub)"/>
+  <circle cx="512" cy="502" r="96" fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="4"/>
+  <circle cx="512" cy="502" r="42" fill="none" stroke="#ffffff" stroke-opacity="0.9" stroke-width="13"/>
+  <circle cx="512" cy="502" r="7" fill="#ffffff"/>
+</svg>
