@@ -53,6 +53,11 @@ entries, with the last cell used as the purpose. Example:
 | `/sales-coach` | Pipeline reviews and call technique |
 ```
 
+Agent-roster divisions are also read automatically from
+`~/.claude/agents/divisions/<division>/*.md` (each subfolder is a division, each
+`.md` an agent). The `engineering` and `testing` folders are surfaced under the
+display names "Development" and "Code Quality".
+
 ## Requirements
 
 - macOS (Apple Silicon or Intel)

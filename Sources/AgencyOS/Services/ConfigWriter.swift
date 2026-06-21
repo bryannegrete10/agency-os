@@ -46,7 +46,7 @@ enum ConfigWriter {
 
     // MARK: - MCP servers (JSON agents only)
 
-    static func canWrite(_ agent: AgentTarget) -> Bool { jsonURL(for: agent) != nil }
+    static func canWrite(_ agent: AgentTarget) -> Bool { agent == .codex || jsonURL(for: agent) != nil }
 
     static func jsonURL(for agent: AgentTarget) -> URL? {
         switch agent {
@@ -98,7 +98,40 @@ enum ConfigWriter {
         return false
     }
 
-    private static func makeBackup(_ url: URL) -> URL? {
+    // MARK: - Codex (TOML) servers
+
+    static var codexURL: URL { home.appendingPathComponent(".codex/config.toml") }
+
+    // Toggle a Codex server by renaming only its table headers between
+    // [mcp_servers.<name>...] and [mcp_servers_disabled.<name>...]. Header lines
+    // only change, so the rest of the TOML is preserved. Backup first.
+    @discardableResult
+    static func setCodexServerEnabled(name: String, enabled: Bool) -> Bool {
+        guard let text = try? String(contentsOf: codexURL, encoding: .utf8) else { return false }
+        let fromPrefix = enabled ? "[mcp_servers_disabled.\(name)" : "[mcp_servers.\(name)"
+        let toPrefix = enabled ? "[mcp_servers.\(name)" : "[mcp_servers_disabled.\(name)"
+
+        var changed = false
+        let rewritten = text.components(separatedBy: "\n").map { line -> String in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix(fromPrefix),
+               trimmed == fromPrefix + "]" || trimmed.hasPrefix(fromPrefix + ".") {
+                changed = true
+                return line.replacingOccurrences(of: fromPrefix, with: toPrefix)
+            }
+            return line
+        }.joined(separator: "\n")
+
+        guard changed, makeBackup(codexURL) != nil else { return false }
+        do {
+            try rewritten.write(to: codexURL, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    static func makeBackup(_ url: URL) -> URL? {
         let stamp = Int(Date().timeIntervalSince1970)
         let backup = url.appendingPathExtension("bak-\(stamp)")
         do {

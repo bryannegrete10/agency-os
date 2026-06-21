@@ -38,7 +38,10 @@ enum SkillScanner {
                 summary: parsed.summary,
                 division: nil,
                 path: dir.path,
-                enabled: enabled
+                enabled: enabled,
+                kind: .skill,
+                invoke: "/" + parsed.name,
+                namespace: nil
             ))
         }
         return items

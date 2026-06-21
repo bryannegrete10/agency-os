@@ -21,6 +21,26 @@ struct MCPServer: Identifiable, Sendable {
 }
 
 // An installed skill discovered in ~/.claude/skills/<folder>/SKILL.md.
+enum SkillKind: String, Sendable {
+    case skill, pluginSkill, command
+
+    var rank: Int {
+        switch self {
+        case .skill: return 0
+        case .command: return 1
+        case .pluginSkill: return 2
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .skill: return "skill"
+        case .command: return "command"
+        case .pluginSkill: return "plugin"
+        }
+    }
+}
+
 struct SkillItem: Identifiable, Sendable {
     let id: String
     var name: String
@@ -29,6 +49,9 @@ struct SkillItem: Identifiable, Sendable {
     var division: String?
     var path: String
     var enabled: Bool
+    var kind: SkillKind = .skill
+    var invoke: String = ""
+    var namespace: String? = nil
 }
 
 // A source repo for the install-later library view.
@@ -52,11 +75,17 @@ struct DivisionEntry: Identifiable, Sendable {
     var installed: Bool
 }
 
+enum DivisionKind: String, Sendable {
+    case skills   // from the Agency-OS skill map
+    case agents   // from ~/.claude/agents/divisions/
+}
+
 // A division (Creative, Sales, Marketing, Design, Ops, Tooling, ...).
 struct Division: Identifiable, Sendable {
-    var id: String { name }
+    var id: String { "\(kind.rawValue):\(name)" }
     var name: String
     var entries: [DivisionEntry]
+    var kind: DivisionKind = .skills
 }
 
 // A single CARL rule within a domain.

@@ -13,6 +13,7 @@ enum CodexConfigReader {
 
         var commands: [String: String] = [:]
         var argLists: [String: [String]] = [:]
+        var activeMap: [String: Bool] = [:]
         var order: [String] = []
         var current: String?
         var inEnvSubtable = false
@@ -23,15 +24,24 @@ enum CodexConfigReader {
 
             if line.hasPrefix("[") && line.hasSuffix("]") {
                 let header = String(line.dropFirst().dropLast())
-                if header.hasPrefix("mcp_servers.") {
-                    let rest = String(header.dropFirst("mcp_servers.".count))
+                let (prefix, active): (String?, Bool) =
+                    header.hasPrefix("mcp_servers_disabled.") ? ("mcp_servers_disabled.", false)
+                    : header.hasPrefix("mcp_servers.") ? ("mcp_servers.", true)
+                    : (nil, true)
+
+                if let prefix {
+                    let rest = String(header.dropFirst(prefix.count))
                     if rest.hasSuffix(".env") {
                         inEnvSubtable = true
                     } else {
                         let name = unquote(rest)
                         current = name
                         inEnvSubtable = false
-                        if commands[name] == nil { commands[name] = ""; order.append(name) }
+                        if commands[name] == nil {
+                            commands[name] = ""
+                            order.append(name)
+                            activeMap[name] = active
+                        }
                     }
                 } else {
                     current = nil
@@ -56,7 +66,7 @@ enum CodexConfigReader {
                 .filter { !$0.isEmpty }
                 .joined(separator: " ")
             return MCPServer(id: "codex:\(name)", name: name, command: cmd,
-                             source: .codex, active: true, category: nil)
+                             source: .codex, active: activeMap[name] ?? true, category: nil)
         }
     }
 

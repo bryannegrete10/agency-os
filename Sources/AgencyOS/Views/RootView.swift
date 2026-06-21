@@ -2,12 +2,14 @@ import SwiftUI
 import AppKit
 import Observation
 
+@MainActor
 @Observable
 final class AppModel {
     var servers: [MCPServer] = []
     var skills: [SkillItem] = []
     var divisions: [Division] = []
     var library: [LibraryItem] = []
+    var installMessages: [String: String] = [:]
     var rules: [CarlDomain] = []
     private var loaded = false
 
@@ -23,33 +25,41 @@ final class AppModel {
             + CodexConfigReader.loadServers()
             + AntigravityConfigReader.loadServers()
 
-        var scanned = SkillScanner.scan()
-        let folders = Set(scanned.map { $0.folder })
-        divisions = DivisionParser.parse(installedFolders: folders)
+        var userSkills = SkillScanner.scan()
+        let folders = Set(userSkills.map { $0.folder })
+        let skillDivisions = DivisionParser.parse(installedFolders: folders)
+        divisions = skillDivisions + AgentDivisionScanner.scan()
 
         var lookup: [String: String] = [:]
-        for division in divisions {
+        for division in skillDivisions {
             for entry in division.entries {
                 let folder = entry.invoke.hasPrefix("/") ? String(entry.invoke.dropFirst()) : entry.invoke
                 if lookup[folder] == nil { lookup[folder] = division.name }
             }
         }
-        for index in scanned.indices {
-            scanned[index].division = lookup[scanned[index].folder]
+        for index in userSkills.indices {
+            userSkills[index].division = lookup[userSkills[index].folder]
         }
-        skills = scanned
+
+        var all = userSkills + PluginScanner.scan()
+        all.sort {
+            $0.kind.rank != $1.kind.rank
+                ? $0.kind.rank < $1.kind.rank
+                : $0.invoke.localizedCaseInsensitiveCompare($1.invoke) == .orderedAscending
+        }
+        skills = all
         library = LibraryStore.load()
         rules = RulesReader.load()
     }
 
     func addLibraryItem(repo: String, installURL: String) {
-        let trimmed = repo.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, !library.contains(where: { $0.repo == trimmed }) else { return }
+        let clean = SkillInstaller.sanitizeRepo(repo)
+        guard !clean.isEmpty, !library.contains(where: { $0.repo == clean }) else { return }
         let urlTrim = installURL.trimmingCharacters(in: .whitespaces)
-        let folder = trimmed.split(separator: "/").last.map(String.init) ?? trimmed
+        let folder = clean.split(separator: "/").last.map(String.init) ?? clean
         library.append(LibraryItem(
-            repo: trimmed, stars: "n/a", license: "n/a",
-            link: "https://github.com/\(trimmed)",
+            repo: clean, stars: "n/a", license: "n/a",
+            link: "https://github.com/\(clean)",
             installed: false, note: "",
             installURL: urlTrim.isEmpty ? nil : urlTrim,
             installFolder: folder
@@ -58,13 +68,52 @@ final class AppModel {
     }
 
     func installLibraryItem(_ item: LibraryItem) {
-        guard let url = item.installURL, let folder = item.installFolder else { return }
-        guard ConfigWriter.installSkill(from: url, folder: folder) else { return }
-        if let index = library.firstIndex(where: { $0.id == item.id }) {
-            library[index].installed = true
-            LibraryStore.save(library)
+        installMessages[item.id] = "Installing..."
+        let repo = item.repo
+        let explicit = item.installURL
+        let sanitized = SkillInstaller.sanitizeRepo(item.repo)
+        let folder = item.installFolder
+            ?? sanitized.split(separator: "/").last.map(String.init)
+            ?? sanitized
+        Task { @MainActor in
+            let result = await SkillInstaller.install(repo: repo, explicitURL: explicit, folder: folder)
+            switch result {
+            case .installed(let installedFolder):
+                if let index = library.firstIndex(where: { $0.id == item.id }) {
+                    library[index].installed = true
+                    if library[index].installFolder == nil { library[index].installFolder = installedFolder }
+                }
+                installMessages[item.id] = nil
+                LibraryStore.save(library)
+                reload()
+            case .notFound:
+                installMessages[item.id] = "No SKILL.md found in that repo (it may be an MCP server, not a skill)."
+            case .failed(let message):
+                installMessages[item.id] = "Install failed: \(message)"
+            }
         }
-        reload()
+    }
+
+    func addServerFromLibrary(_ item: LibraryItem, agent: AgentTarget, command: String) {
+        let parts = command.split(separator: " ").map(String.init)
+        guard let cmd = parts.first, !cmd.isEmpty else {
+            installMessages[item.id] = "Enter a run command first."
+            return
+        }
+        let args = Array(parts.dropFirst())
+        let sanitized = SkillInstaller.sanitizeRepo(item.repo)
+        let name = sanitized.split(separator: "/").last.map(String.init) ?? sanitized
+
+        if ServerInstaller.add(agent: agent, name: name, command: cmd, args: args) {
+            if let index = library.firstIndex(where: { $0.id == item.id }) {
+                library[index].installed = true
+            }
+            installMessages[item.id] = "Added '\(name)' to \(agent.rawValue). Set any API keys in its config."
+            LibraryStore.save(library)
+            reload()
+        } else {
+            installMessages[item.id] = "Could not add to \(agent.rawValue) (already exists or write failed)."
+        }
     }
 
     func removeLibraryItem(_ id: String) {
@@ -85,7 +134,11 @@ final class AppModel {
 
     func toggleServer(_ server: MCPServer) {
         guard ConfigWriter.canWrite(server.source) else { return }
-        ConfigWriter.setServerEnabled(agent: server.source, name: server.name, enabled: !server.active)
+        if server.source == .codex {
+            ConfigWriter.setCodexServerEnabled(name: server.name, enabled: !server.active)
+        } else {
+            ConfigWriter.setServerEnabled(agent: server.source, name: server.name, enabled: !server.active)
+        }
         reload()
     }
 
@@ -94,6 +147,11 @@ final class AppModel {
             ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/config.toml")
             : ConfigWriter.jsonURL(for: agent)
         if let url { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+    }
+
+    func copyInvoke(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 
@@ -129,6 +187,17 @@ struct RootView: View {
             .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
             .listStyle(.sidebar)
             .navigationTitle("Agency OS")
+            .safeAreaInset(edge: .bottom) {
+                Button { model.reload() } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                        .font(.callout)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, Theme.Space.s)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.textSecondary)
+                .padding(Theme.Space.s)
+            }
         } detail: {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -292,37 +361,106 @@ struct EmptyHint: View {
 
 struct SkillsView: View {
     let model: AppModel
+    @State private var kindFilter: SkillKind?
+    @State private var query = ""
+
+    private var filtered: [SkillItem] {
+        model.skills.filter { skill in
+            (kindFilter == nil || skill.kind == kindFilter) && matches(skill)
+        }
+    }
+
+    private func matches(_ skill: SkillItem) -> Bool {
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !needle.isEmpty else { return true }
+        return skill.invoke.lowercased().contains(needle)
+            || skill.name.lowercased().contains(needle)
+            || skill.summary.lowercased().contains(needle)
+            || (skill.namespace?.lowercased().contains(needle) ?? false)
+            || (skill.division?.lowercased().contains(needle) ?? false)
+    }
+
+    private func count(_ kind: SkillKind) -> Int { model.skills.filter { $0.kind == kind }.count }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
-                SectionHeader(title: "Skills",
-                              subtitle: "\(model.skills.count) installed in ~/.claude/skills")
-                ForEach(model.skills) { skill in
-                    VStack(alignment: .leading, spacing: Theme.Space.xs) {
-                        HStack(spacing: Theme.Space.s) {
-                            Text("/" + skill.name)
-                                .font(.headline)
-                                .foregroundStyle(Theme.textPrimary)
-                            if let division = skill.division {
-                                Pill(text: division, color: Theme.accent)
-                            }
-                            Spacer()
-                            ToggleChip(isOn: skill.enabled) { model.toggleSkill(skill) }
-                        }
-                        Text(skill.summary.isEmpty ? skill.folder : skill.summary)
-                            .font(.caption)
+                SectionHeader(
+                    title: "Skills",
+                    subtitle: query.isEmpty
+                        ? "\(model.skills.count) skills + commands across user folders and installed plugins"
+                        : "\(filtered.count) of \(model.skills.count) match"
+                )
+
+                HStack(spacing: Theme.Space.s) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(Theme.textSecondary)
+                    TextField("Search skills, commands, descriptions...", text: $query)
+                        .textFieldStyle(.plain)
+                        .foregroundStyle(Theme.textPrimary)
+                    if !query.isEmpty {
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain)
                             .foregroundStyle(Theme.textSecondary)
-                            .lineLimit(2)
                     }
-                    .padding(Theme.Space.l)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .opacity(skill.enabled ? 1 : 0.55)
-                    .glassPanel()
+                }
+                .padding(Theme.Space.s)
+                .background(Theme.panel)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.s))
+
+                HStack(spacing: Theme.Space.s) {
+                    FilterChip(label: "All", count: model.skills.count, selected: kindFilter == nil) { kindFilter = nil }
+                    FilterChip(label: "Skills", count: count(.skill), selected: kindFilter == .skill) { kindFilter = .skill }
+                    FilterChip(label: "Commands", count: count(.command), selected: kindFilter == .command) { kindFilter = .command }
+                    FilterChip(label: "Plugin", count: count(.pluginSkill), selected: kindFilter == .pluginSkill) { kindFilter = .pluginSkill }
+                }
+                .padding(.bottom, Theme.Space.xs)
+
+                if filtered.isEmpty {
+                    EmptyHint(text: "No skills or commands match.")
+                } else {
+                    ForEach(filtered) { skill in
+                        SkillCard(
+                            skill: skill,
+                            onCopy: { model.copyInvoke(skill.invoke.isEmpty ? "/" + skill.name : skill.invoke) },
+                            onToggle: skill.kind == .skill ? { model.toggleSkill(skill) } : nil
+                        )
+                    }
                 }
             }
             .padding(Theme.Space.xl)
         }
+    }
+}
+
+struct SkillCard: View {
+    let skill: SkillItem
+    let onCopy: () -> Void
+    let onToggle: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.xs) {
+            HStack(spacing: Theme.Space.s) {
+                Text(skill.invoke.isEmpty ? "/" + skill.name : skill.invoke)
+                    .font(.headline)
+                    .foregroundStyle(Theme.textPrimary)
+                if skill.kind != .skill { Pill(text: skill.kind.label, color: Theme.warn) }
+                if let division = skill.division { Pill(text: division, color: Theme.accent) }
+                Spacer()
+                Button(action: onCopy) { Image(systemName: "doc.on.doc") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.textSecondary)
+                    .help("Copy invocation")
+                if let onToggle { ToggleChip(isOn: skill.enabled, action: onToggle) }
+            }
+            Text(skill.summary.isEmpty ? skill.folder : skill.summary)
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(2)
+        }
+        .padding(Theme.Space.l)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .opacity(skill.enabled ? 1 : 0.55)
+        .glassPanel()
     }
 }
 
@@ -361,10 +499,12 @@ struct LibraryView: View {
                 ForEach(model.library) { item in
                     LibraryCard(
                         item: item,
+                        message: model.installMessages[item.id],
                         onOpen: { open(item.link) },
                         onInstall: { model.installLibraryItem(item) },
                         onToggle: { model.toggleInstalled(item.id) },
-                        onRemove: { model.removeLibraryItem(item.id) }
+                        onRemove: { model.removeLibraryItem(item.id) },
+                        onAddServer: { agent, command in model.addServerFromLibrary(item, agent: agent, command: command) }
                     )
                 }
             }
@@ -389,10 +529,21 @@ struct LibraryView: View {
 
 struct LibraryCard: View {
     let item: LibraryItem
+    let message: String?
     let onOpen: () -> Void
     let onInstall: () -> Void
     let onToggle: () -> Void
     let onRemove: () -> Void
+    let onAddServer: (AgentTarget, String) -> Void
+
+    @State private var showServer = false
+    @State private var serverCommand = ""
+
+    private var installing: Bool { message == "Installing..." }
+    private var commandGuess: String {
+        let last = item.repo.split(separator: "/").last.map(String.init) ?? "server"
+        return "npx -y \(last)-mcp"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.s) {
@@ -405,15 +556,30 @@ struct LibraryCard: View {
             if !item.note.isEmpty {
                 Text(item.note).font(.caption).foregroundStyle(Theme.textSecondary).lineLimit(2)
             }
+            if let message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(installing ? Theme.textSecondary : Theme.warn)
+            }
             HStack(spacing: Theme.Space.s) {
                 if item.stars != "n/a" { Pill(text: "\(item.stars) stars") }
                 if item.license != "n/a" { Pill(text: item.license) }
                 Spacer()
-                if !item.installed, item.installURL != nil {
-                    Button("Install", action: onInstall)
+                if !item.installed {
+                    Button(installing ? "Installing..." : "Install skill", action: onInstall)
                         .buttonStyle(.plain)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Theme.success)
+                        .disabled(installing)
+                        .help("Downloads the repo's SKILL.md into ~/.claude/skills (a local Claude Code skill).")
+                    Button("Add server") {
+                        if serverCommand.isEmpty { serverCommand = commandGuess }
+                        showServer.toggle()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+                    .help("Adds this as an MCP server to an agent config you choose (Claude Code / Desktop / Codex / Antigravity).")
                 }
                 Button("Open", action: onOpen).buttonStyle(.plain).foregroundStyle(Theme.accent)
                 Button(item.installed ? "Mark wishlist" : "Mark installed", action: onToggle)
@@ -422,6 +588,36 @@ struct LibraryCard: View {
                     .buttonStyle(.plain).foregroundStyle(Theme.danger)
             }
             .font(.caption)
+
+            if showServer {
+                VStack(alignment: .leading, spacing: Theme.Space.s) {
+                    TextField("Run command, e.g. npx -y firecrawl-mcp", text: $serverCommand)
+                        .textFieldStyle(.plain)
+                        .foregroundStyle(Theme.textPrimary)
+                        .padding(Theme.Space.s)
+                        .background(Theme.bg)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.s))
+                    HStack(spacing: Theme.Space.s) {
+                        Text("Add to:").font(.caption2).foregroundStyle(Theme.textSecondary)
+                        ForEach(AgentTarget.allCases) { agent in
+                            Button(agent.rawValue) {
+                                onAddServer(agent, serverCommand)
+                                showServer = false
+                            }
+                            .buttonStyle(.plain)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(Theme.bg)
+                            .padding(.horizontal, Theme.Space.s)
+                            .padding(.vertical, Theme.Space.xs)
+                            .background(Theme.accent)
+                            .clipShape(Capsule())
+                        }
+                    }
+                    Text("Edit the command, pick an agent. Add any API keys in the config afterward.")
+                        .font(.caption2).foregroundStyle(Theme.textSecondary.opacity(0.7))
+                }
+                .padding(.top, Theme.Space.xs)
+            }
         }
         .padding(Theme.Space.l)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -431,23 +627,40 @@ struct LibraryCard: View {
 
 struct DivisionsView: View {
     let model: AppModel
+    @State private var kindFilter: DivisionKind?
+
+    private var filtered: [Division] {
+        guard let kindFilter else { return model.divisions }
+        return model.divisions.filter { $0.kind == kindFilter }
+    }
+
+    private func count(_ kind: DivisionKind) -> Int { model.divisions.filter { $0.kind == kind }.count }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
                 SectionHeader(
                     title: "Divisions",
-                    subtitle: "\(model.divisions.count) divisions from your Agency-OS map"
+                    subtitle: "\(model.divisions.count) divisions (skill map + agent roster)"
                 )
-                ForEach(model.divisions) { division in
+                HStack(spacing: Theme.Space.s) {
+                    FilterChip(label: "All", count: model.divisions.count, selected: kindFilter == nil) { kindFilter = nil }
+                    FilterChip(label: "Skills", count: count(.skills), selected: kindFilter == .skills) { kindFilter = .skills }
+                    FilterChip(label: "Agents", count: count(.agents), selected: kindFilter == .agents) { kindFilter = .agents }
+                }
+                .padding(.bottom, Theme.Space.xs)
+
+                ForEach(filtered) { division in
                     VStack(alignment: .leading, spacing: Theme.Space.s) {
-                        HStack {
+                        HStack(spacing: Theme.Space.s) {
                             Text(division.name)
                                 .font(.title3.bold())
                                 .foregroundStyle(Theme.textPrimary)
+                            Pill(text: division.kind == .agents ? "agents" : "skills",
+                                 color: division.kind == .agents ? Theme.warn : Theme.accent)
                             Spacer()
-                            let installed = division.entries.filter { $0.installed }.count
-                            Pill(text: "\(installed)/\(division.entries.count) local", color: Theme.accent)
+                            Text("\(division.entries.count)")
+                                .font(.caption).foregroundStyle(Theme.textSecondary)
                         }
                         ForEach(division.entries) { entry in
                             HStack(alignment: .top, spacing: Theme.Space.s) {
@@ -540,21 +753,5 @@ struct SectionHeader: View {
                 .foregroundStyle(Theme.textSecondary)
         }
         .padding(.bottom, Theme.Space.s)
-    }
-}
-
-struct PlaceholderView: View {
-    let title: String
-
-    var body: some View {
-        VStack(spacing: Theme.Space.m) {
-            Image(systemName: "hammer.fill")
-                .font(.system(size: 36))
-                .foregroundStyle(Theme.textSecondary)
-            Text("\(title) lands in the next milestone")
-                .font(.title3)
-                .foregroundStyle(Theme.textSecondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
