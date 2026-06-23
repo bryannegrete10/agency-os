@@ -14,7 +14,8 @@ config files you already have.
 - Discovers installed skills under `~/.claude/skills` and lets you enable or disable
   them by moving folders between `skills` and `skills_disabled` (no data loss, just a move).
 - Parses a divisions map into divisions and their skill entries.
-- Reads CARL domains and rules from `~/.carl/carl.json`.
+- Reads CARL domains and rules from `~/.carl/carl.json`, with a Show/Hide toggle that
+  expands each domain's full decision log.
 - Tracks an install-later library of source repos at `~/.agency-os/library.json`.
 
 ## Data sources (read at runtime)

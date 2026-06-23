@@ -95,6 +95,16 @@ struct CarlRule: Identifiable, Sendable {
     var source: String
 }
 
+// A logged CARL decision within a domain (the running decision log, distinct
+// from hard rules). Surfaced behind a "Show all" toggle in the Rules view.
+struct CarlDecision: Identifiable, Sendable {
+    var id: String
+    var text: String
+    var rationale: String
+    var date: String
+    var status: String
+}
+
 // A CARL domain (GLOBAL, DEVELOPMENT, SHOPIFY, ...) from ~/.carl/carl.json.
 struct CarlDomain: Identifiable, Sendable {
     var id: String { name }
@@ -103,5 +113,6 @@ struct CarlDomain: Identifiable, Sendable {
     var alwaysOn: Bool
     var recall: [String]
     var rules: [CarlRule]
-    var decisionCount: Int
+    var decisions: [CarlDecision]
+    var decisionCount: Int { decisions.count }
 }

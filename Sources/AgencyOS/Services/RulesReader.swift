@@ -24,13 +24,23 @@ enum RulesReader {
                     source: rule["source"] as? String ?? ""
                 )
             }
+            let decisionsRaw = (dict["decisions"] as? [[String: Any]]) ?? []
+            let decisions = decisionsRaw.enumerated().map { index, d in
+                CarlDecision(
+                    id: (d["id"] as? String) ?? "\(name)-d\(index)",
+                    text: d["decision"] as? String ?? "",
+                    rationale: d["rationale"] as? String ?? "",
+                    date: d["date"] as? String ?? "",
+                    status: d["status"] as? String ?? ""
+                )
+            }
             result.append(CarlDomain(
                 name: name,
                 state: dict["state"] as? String ?? "unknown",
                 alwaysOn: dict["always_on"] as? Bool ?? false,
                 recall: (dict["recall"] as? [String]) ?? [],
                 rules: rules,
-                decisionCount: ((dict["decisions"] as? [Any]) ?? []).count
+                decisions: decisions
             ))
         }
 

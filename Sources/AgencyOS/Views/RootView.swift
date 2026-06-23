@@ -701,41 +701,94 @@ struct RulesView: View {
                     subtitle: "\(model.rules.count) CARL domains from ~/.carl/carl.json"
                 )
                 ForEach(model.rules) { domain in
-                    VStack(alignment: .leading, spacing: Theme.Space.s) {
-                        HStack(spacing: Theme.Space.s) {
-                            Text(domain.name).font(.title3.bold()).foregroundStyle(Theme.textPrimary)
-                            if domain.alwaysOn { Pill(text: "always-on", color: Theme.success) }
-                            Pill(text: domain.state,
-                                 color: domain.state == "active" ? Theme.accent : Theme.textSecondary)
-                            Spacer()
-                            if domain.decisionCount > 0 { Pill(text: "\(domain.decisionCount) decisions") }
-                        }
-                        if domain.rules.isEmpty {
-                            Text("No hard rules (recall-triggered domain).")
-                                .font(.caption).foregroundStyle(Theme.textSecondary)
-                        } else {
-                            ForEach(domain.rules) { rule in
-                                HStack(alignment: .top, spacing: Theme.Space.s) {
-                                    Circle().fill(Theme.accent.opacity(0.6))
-                                        .frame(width: 5, height: 5).padding(.top, 6)
-                                    Text(rule.text).font(.caption).foregroundStyle(Theme.textSecondary)
-                                }
-                            }
-                        }
-                        if !domain.recall.isEmpty {
-                            Text("triggers: " + domain.recall.prefix(8).joined(separator: ", "))
-                                .font(.caption2)
-                                .foregroundStyle(Theme.textSecondary.opacity(0.7))
-                                .lineLimit(2)
-                        }
-                    }
-                    .padding(Theme.Space.l)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .glassPanel()
+                    DomainCard(domain: domain)
                 }
             }
             .padding(Theme.Space.xl)
         }
+    }
+}
+
+// One CARL domain card. Hard rules render inline; the logged decisions are
+// hidden behind a "Show all" toggle (decisions are a separate, longer list
+// than the rules, so the count alone was misleading).
+private struct DomainCard: View {
+    let domain: CarlDomain
+    @State private var showDecisions = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
+            HStack(spacing: Theme.Space.s) {
+                Text(domain.name).font(.title3.bold()).foregroundStyle(Theme.textPrimary)
+                if domain.alwaysOn { Pill(text: "always-on", color: Theme.success) }
+                Pill(text: domain.state,
+                     color: domain.state == "active" ? Theme.accent : Theme.textSecondary)
+                Spacer()
+                if !domain.decisions.isEmpty {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { showDecisions.toggle() }
+                    } label: {
+                        Pill(text: showDecisions
+                                ? "Hide decisions"
+                                : "Show \(domain.decisions.count) decisions",
+                             color: showDecisions ? Theme.accent : Theme.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(showDecisions ? "Collapse the decision log" : "Show all logged decisions")
+                }
+            }
+            if domain.rules.isEmpty {
+                Text("No hard rules (recall-triggered domain).")
+                    .font(.caption).foregroundStyle(Theme.textSecondary)
+            } else {
+                ForEach(domain.rules) { rule in
+                    HStack(alignment: .top, spacing: Theme.Space.s) {
+                        Circle().fill(Theme.accent.opacity(0.6))
+                            .frame(width: 5, height: 5).padding(.top, 6)
+                        Text(rule.text).font(.caption).foregroundStyle(Theme.textSecondary)
+                    }
+                }
+            }
+            if showDecisions {
+                Divider().overlay(Theme.textSecondary.opacity(0.15))
+                Text("Decision log (\(domain.decisions.count))")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Theme.textSecondary)
+                ForEach(domain.decisions) { decision in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .top, spacing: Theme.Space.s) {
+                            Circle().fill(Theme.success.opacity(0.6))
+                                .frame(width: 5, height: 5).padding(.top, 6)
+                            Text(decision.text)
+                                .font(.caption).foregroundStyle(Theme.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if !decision.rationale.isEmpty {
+                            Text("Why: " + decision.rationale)
+                                .font(.caption2).foregroundStyle(Theme.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.leading, Theme.Space.m)
+                        }
+                        let meta = [decision.date, decision.status].filter { !$0.isEmpty }
+                        if !meta.isEmpty {
+                            Text(meta.joined(separator: "  |  "))
+                                .font(.caption2).foregroundStyle(Theme.textSecondary.opacity(0.6))
+                                .padding(.leading, Theme.Space.m)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+            if !domain.recall.isEmpty {
+                Text("triggers: " + domain.recall.prefix(8).joined(separator: ", "))
+                    .font(.caption2)
+                    .foregroundStyle(Theme.textSecondary.opacity(0.7))
+                    .lineLimit(2)
+            }
+        }
+        .padding(Theme.Space.l)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassPanel()
     }
 }
 
