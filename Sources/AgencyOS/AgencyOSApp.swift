@@ -7,7 +7,18 @@ import AppKit
 // Built as a Swift Package executable so it runs unsandboxed and can read the
 // agent config files scattered across the home directory. Launch with:
 //   cd internal/agency-os && swift run
+// Entry point. `--self-test` runs the CLT test suite and exits before any window
+// is created; otherwise the normal SwiftUI app launches.
 @main
+enum AppEntry {
+    static func main() {
+        if CommandLine.arguments.contains("--self-test") {
+            SelfTest.runAndExit()
+        }
+        AgencyOSApp.main()
+    }
+}
+
 struct AgencyOSApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 

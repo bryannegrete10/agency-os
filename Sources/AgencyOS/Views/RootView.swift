@@ -11,7 +11,15 @@ final class AppModel {
     var library: [LibraryItem] = []
     var installMessages: [String: String] = [:]
     var rules: [CarlDomain] = []
+    var sources: [String: SkillSource] = [:]
+    var updateStatuses: [String: UpdateStatus] = [:]
+    var checkingUpdates = false
+    var updateBusy: Set<String> = []
+    var updateLog: [String: String] = [:]
+    var updateOutput: [String: String] = [:]
     private var loaded = false
+
+    var updatesAvailable: Int { updateStatuses.values.filter { $0.state == .available }.count }
 
     func loadIfNeeded() {
         guard !loaded else { return }
@@ -50,6 +58,63 @@ final class AppModel {
         skills = all
         library = LibraryStore.load()
         rules = RulesReader.load()
+        sources = SkillSourceStore.load()
+    }
+
+    // Checks every user skill that has a known source for a newer upstream
+    // version. On demand only (no launch-time network calls). Read-only.
+    func checkForUpdates() {
+        guard !checkingUpdates else { return }
+        checkingUpdates = true
+        updateStatuses = [:]
+        let targets: [(SkillItem, SkillSource)] = skills.compactMap { skill in
+            guard skill.kind == .skill, let source = sources[skill.folder] else { return nil }
+            return (skill, source)
+        }
+        Task { @MainActor in
+            await withTaskGroup(of: UpdateStatus.self) { group in
+                for (skill, source) in targets {
+                    group.addTask { await UpdateChecker.check(skill: skill, source: source) }
+                }
+                for await status in group {
+                    updateStatuses[status.folder] = status
+                }
+            }
+            checkingUpdates = false
+        }
+    }
+
+    // Applies a skill's update via its manifest recipe (CLI or single-file), then
+    // refreshes, records the new installed version, and re-checks that one skill.
+    func applyUpdate(_ folder: String) {
+        guard let source = sources[folder], !updateBusy.contains(folder) else { return }
+        updateBusy.insert(folder)
+        updateLog[folder] = "Installing..."
+        updateOutput[folder] = nil
+        Task { @MainActor in
+            let result = await SkillUpdater.apply(source)
+            updateBusy.remove(folder)
+            updateOutput[folder] = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard result.success else {
+                updateLog[folder] = "Update failed."
+                return
+            }
+            updateLog[folder] = "Updated."
+            reload()
+            // Record the now-installed version so a no-frontmatter-version skill
+            // doesn't stay stuck on "version unknown": prefer the freshly parsed
+            // frontmatter, else the last check's latest, else fetch latest now.
+            var newVersion = skills.first { $0.folder == folder }?.version
+                ?? updateStatuses[folder]?.latest
+            if newVersion == nil { newVersion = await UpdateChecker.latestVersion(for: source) }
+            if let newVersion {
+                SkillSourceStore.setInstalledVersion(folder: folder, version: newVersion)
+                sources = SkillSourceStore.load()
+            }
+            if let skill = skills.first(where: { $0.folder == folder }), let source2 = sources[folder] {
+                updateStatuses[folder] = await UpdateChecker.check(skill: skill, source: source2)
+            }
+        }
     }
 
     func addLibraryItem(repo: String, installURL: String) {
@@ -415,14 +480,47 @@ struct SkillsView: View {
                 }
                 .padding(.bottom, Theme.Space.xs)
 
+                HStack(spacing: Theme.Space.s) {
+                    Button { model.checkForUpdates() } label: {
+                        HStack(spacing: Theme.Space.xs) {
+                            if model.checkingUpdates {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                            }
+                            Text(model.checkingUpdates ? "Checking..." : "Check for updates")
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Theme.textPrimary)
+                        .padding(.horizontal, Theme.Space.m)
+                        .padding(.vertical, Theme.Space.s)
+                        .background(Theme.panel)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.checkingUpdates)
+
+                    if model.updatesAvailable > 0 {
+                        Pill(text: "\(model.updatesAvailable) update\(model.updatesAvailable == 1 ? "" : "s") available",
+                             color: Theme.warn)
+                    }
+                    Spacer()
+                }
+                .padding(.bottom, Theme.Space.xs)
+
                 if filtered.isEmpty {
                     EmptyHint(text: "No skills or commands match.")
                 } else {
                     ForEach(filtered) { skill in
                         SkillCard(
                             skill: skill,
+                            status: model.updateStatuses[skill.folder],
+                            busy: model.updateBusy.contains(skill.folder),
+                            log: model.updateLog[skill.folder],
+                            output: model.updateOutput[skill.folder],
                             onCopy: { model.copyInvoke(skill.invoke.isEmpty ? "/" + skill.name : skill.invoke) },
-                            onToggle: skill.kind == .skill ? { model.toggleSkill(skill) } : nil
+                            onToggle: skill.kind == .skill ? { model.toggleSkill(skill) } : nil,
+                            onUpdate: model.sources[skill.folder] != nil ? { model.applyUpdate(skill.folder) } : nil
                         )
                     }
                 }
@@ -434,8 +532,14 @@ struct SkillsView: View {
 
 struct SkillCard: View {
     let skill: SkillItem
+    var status: UpdateStatus? = nil
+    var busy: Bool = false
+    var log: String? = nil
+    var output: String? = nil
     let onCopy: () -> Void
-    let onToggle: (() -> Void)?
+    var onToggle: (() -> Void)? = nil
+    var onUpdate: (() -> Void)? = nil
+    @State private var showOutput = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
@@ -445,7 +549,24 @@ struct SkillCard: View {
                     .foregroundStyle(Theme.textPrimary)
                 if skill.kind != .skill { Pill(text: skill.kind.label, color: Theme.warn) }
                 if let division = skill.division { Pill(text: division, color: Theme.accent) }
+                if let version = skill.version { Pill(text: "v\(version)") }
+                statusPill
                 Spacer()
+                if busy {
+                    ProgressView().controlSize(.small)
+                } else if canUpdate, let onUpdate {
+                    Button(action: onUpdate) {
+                        Text(status?.state == .available ? "Update" : "Update anyway")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Theme.bg)
+                            .padding(.horizontal, Theme.Space.s)
+                            .padding(.vertical, 4)
+                            .background(Theme.warn)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Run this skill's update command")
+                }
                 Button(action: onCopy) { Image(systemName: "doc.on.doc") }
                     .buttonStyle(.plain)
                     .foregroundStyle(Theme.textSecondary)
@@ -456,11 +577,67 @@ struct SkillCard: View {
                 .font(.caption)
                 .foregroundStyle(Theme.textSecondary)
                 .lineLimit(2)
+            if let log {
+                HStack(spacing: Theme.Space.s) {
+                    Text(log)
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(2)
+                    if let output, !output.isEmpty {
+                        Button { showOutput.toggle() } label: {
+                            Text(showOutput ? "Hide output" : "Show output")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(Theme.accent)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                if showOutput, let output, !output.isEmpty {
+                    ScrollView {
+                        Text(output)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(Theme.textSecondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(Theme.Space.s)
+                    }
+                    .frame(maxHeight: 160)
+                    .background(Theme.bg.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.s))
+                }
+            }
         }
         .padding(Theme.Space.l)
         .frame(maxWidth: .infinity, alignment: .leading)
         .opacity(skill.enabled ? 1 : 0.55)
         .glassPanel()
+    }
+
+    // Offer the updater when there's a newer version, or when the installed
+    // version is unknown but we DID resolve an upstream one (force-reinstall).
+    // A failed upstream read (unknown + no latest) shows no button.
+    private var canUpdate: Bool {
+        switch status?.state {
+        case .available: return true
+        case .unknown: return status?.latest != nil
+        default: return false
+        }
+    }
+
+    @ViewBuilder
+    private var statusPill: some View {
+        if let status {
+            switch status.state {
+            case .available:
+                Pill(text: status.latest.map { "-> \($0)" } ?? "update available", color: Theme.warn)
+            case .current:
+                Pill(text: "up to date", color: Theme.success)
+            case .unknown:
+                Pill(text: "version unknown", color: Theme.textSecondary)
+            case .noSource, .error:
+                EmptyView()
+            }
+        }
     }
 }
 

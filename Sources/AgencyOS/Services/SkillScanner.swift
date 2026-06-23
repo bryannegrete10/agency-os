@@ -41,19 +41,21 @@ enum SkillScanner {
                 enabled: enabled,
                 kind: .skill,
                 invoke: "/" + parsed.name,
-                namespace: nil
+                namespace: nil,
+                version: parsed.version
             ))
         }
         return items
     }
 
-    private static func parseFrontmatter(_ url: URL, fallback: String) -> (name: String, summary: String) {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return (fallback, "") }
+    private static func parseFrontmatter(_ url: URL, fallback: String) -> (name: String, summary: String, version: String?) {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return (fallback, "", nil) }
         let lines = content.components(separatedBy: .newlines)
-        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else { return (fallback, "") }
+        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else { return (fallback, "", nil) }
 
         var name = fallback
         var summary = ""
+        var version: String? = nil
         for line in lines.dropFirst() {
             let t = line.trimmingCharacters(in: .whitespaces)
             if t == "---" { break }
@@ -61,8 +63,29 @@ enum SkillScanner {
                 name = String(t.dropFirst("name:".count)).trimmingCharacters(in: .whitespaces)
             } else if t.hasPrefix("description:") {
                 summary = String(t.dropFirst("description:".count)).trimmingCharacters(in: .whitespaces)
+            } else if t.hasPrefix("version:") {
+                let raw = String(t.dropFirst("version:".count))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: " '\""))
+                if !raw.isEmpty { version = raw }
             }
         }
-        return (name.isEmpty ? fallback : name, summary)
+        return (name.isEmpty ? fallback : name, summary, version)
+    }
+
+    // Extracts the `version:` field from raw SKILL.md text (used for upstream
+    // content fetched over the network, where there is no file URL).
+    static func versionFrom(content: String) -> String? {
+        let lines = content.components(separatedBy: .newlines)
+        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else { return nil }
+        for line in lines.dropFirst() {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t == "---" { break }
+            if t.hasPrefix("version:") {
+                let raw = String(t.dropFirst("version:".count))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: " '\""))
+                return raw.isEmpty ? nil : raw
+            }
+        }
+        return nil
     }
 }

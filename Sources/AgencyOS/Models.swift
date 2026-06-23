@@ -52,6 +52,7 @@ struct SkillItem: Identifiable, Sendable {
     var kind: SkillKind = .skill
     var invoke: String = ""
     var namespace: String? = nil
+    var version: String? = nil   // from SKILL.md `version:` frontmatter, when present
 }
 
 // A source repo for the install-later library view.
@@ -115,4 +116,51 @@ struct CarlDomain: Identifiable, Sendable {
     var rules: [CarlRule]
     var decisions: [CarlDecision]
     var decisionCount: Int { decisions.count }
+}
+
+// MARK: - Skill update tracking
+
+// Where an installed skill came from -> which update lane applies.
+enum SkillSourceKind: String, Codable, Sendable {
+    case npmCli            // vendor CLI updater (npx impeccable / uipro)
+    case githubSingleFile  // re-download SKILL.md from a GitHub repo
+    case plugin            // managed by Claude Code; read-only here
+    case unknown           // manual copy, no known update path
+}
+
+// How the newest upstream version is discovered.
+enum LatestStrategy: String, Codable, Sendable {
+    case npmVersion        // registry.npmjs.org/<ref>/latest -> .version
+    case githubRelease     // api.github.com/repos/<ref>/releases/latest -> .tag_name
+    case githubFileVersion // upstream SKILL.md `version:` frontmatter
+    case none
+}
+
+// Provenance + update recipe for one installed skill (persisted in skills.json).
+struct SkillSource: Codable, Sendable {
+    var folder: String
+    var kind: SkillSourceKind
+    var ref: String               // npm package name OR "owner/repo"
+    var latest: LatestStrategy
+    var updateExe: String?        // e.g. "npx" | "uipro" (nil = no in-app update)
+    var updateArgs: [String]
+    var installedVersion: String? // last-known installed version (for skills w/o frontmatter version)
+}
+
+enum UpdateState: String, Sendable {
+    case current     // up to date
+    case available   // newer version upstream
+    case unknown     // could not determine (no version signal / network)
+    case noSource    // no known provenance
+    case error       // check failed
+}
+
+// Result of one update check, keyed by skill folder.
+struct UpdateStatus: Identifiable, Sendable {
+    var id: String { folder }
+    var folder: String
+    var state: UpdateState
+    var installed: String?
+    var latest: String?
+    var message: String?
 }
